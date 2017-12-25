@@ -1,0 +1,124 @@
+#coding=utf-8
+from __future__ import division
+import  re
+from collections import defaultdict
+import jieba
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.externals import joblib
+jieba.load_userdict('./jieba_dic.txt')
+tf_idf = joblib.load('./tfidf_features')
+
+
+def tfidf_model():
+    f1=open('','r')
+    corpus=[]
+    for line in f1:
+        msg=line.rstrip('\n').decode('utf-8')
+        corpus.append(msg)
+    tfidf_vectorizer = TfidfVectorizer(min_df=1,token_pattern=r'(?u)\b\w\w*\b')
+    tfidf_matrix = tfidf_vectorizer.fit_transform(corpus)
+    joblib.dump(tfidf_vectorizer,'./tfidf_features')
+
+def tfidf_sim(title,content):
+    title=' '.join(jieba.cut(''.join(title.rstrip('\n').split())))
+    content = ' '.join(jieba.cut(''.join(content.rstrip('\n').split())))
+    corpus=[]
+    corpus.append(title)
+    corpus.append(content)
+    vecs=tf_idf.transform(corpus).toarray()
+    score_sim=vecs[0].dot(vecs[1].T)
+    return score_sim
+
+
+def word_intersection_num(a,b):
+    return len(list(set(a).intersection(set(b))))
+
+def tag_replace(title_list,dict,tag_type,title_new):
+    '''根据上下文字典，取上下文与当前标题(4个词)重合2个词及以上的tag替换'''
+    # 利用seg_title匹配content中位置信息，设置title_new保存tag原信息。
+    # 同时存在TAG_DATE和TAG_NUM两种类型时，若直接在原预测title改正内容会使上下文信息变化导致下次匹配不上
+    for i,word in enumerate(title_list):
+        if (word != tag_type):
+            continue
+        #print word,i,len(title_list)
+        word_len=0
+        better_tag=''
+        for j in range(len(dict.keys())):
+            if (i == 0):
+                com_len=len(list(set(title_list[i + 1:i + 4]).intersection(set(dict[j][1]))))
+            elif (i == 1):
+                com_len=len(list(set(title_list[i - 1:i + 3]).intersection(set(dict[j][1]))))
+            elif (i == len(title_list) - 2):
+                #print ' '.join(title_list[i - 3:i + 1])
+                com_len=len(list(set(title_list[i - 3:i + 1]).intersection(set(dict[j][1]))))
+            elif (i == len(title_list) - 1):
+                com_len=len(list(set(title_list[i - 1:i - 4]).intersection(set(dict[j][1]))))
+            else:
+                com_len=len(list(set(title_list[i - 2:i + 2]).intersection(set(dict[j][1]))))
+            if (com_len >= 2 and com_len >= word_len):  # 取> 与>=的不同，后者更修饰数字
+                word_len = com_len
+                better_tag = dict[j][0]
+            else:
+                continue
+        if (better_tag):
+            #print better_tag
+            '''将匹配tag原内容替换对应tag'''
+            title_new[i] = re.sub(word, better_tag, title_new[i])
+        else:
+            continue
+    #print ' '.join(title_new).encode('utf-8')
+    return title_new
+
+#根据分词content及上下文字典，将预测标题内匹配tag值替换为原内容
+def replace_TAGs(summary,dicts,tags):
+    #print isinstance(unicode,type(summary))
+    title_list=summary.rstrip('\n').decode('utf-8').split()
+    title_new=title_list
+    for i,dict in enumerate(dicts):
+        if (dict):
+            #print i,dict
+            title_new=tag_replace(title_list,dict,tags[i],title_new)
+        else:
+            continue
+    title_new=''.join(title_new)
+    return title_new
+
+
+def get_summary(summary,tags):
+    if len(summary.encode('utf-8'))//3<5:
+        return ''
+    summary_seg=' '.join(jieba.cut(summary)).split()
+    word_dict=defaultdict(int)
+    for i,word in enumerate(summary_seg):
+        #print word
+        if word in tags:
+            return ''
+        word_dict[word.strip()]+=1
+        if (word_dict[word.strip()]>=2):
+            return ''
+        else:
+            continue
+    title=''.join(summary_seg).encode('utf-8')
+    return title
+
+def wb_post_deal(predict_title_seg,content_seg,dicts):
+    '''微博数据后处理'''
+    score=tfidf_sim(predict_title_seg,content_seg)
+    print score
+    if score<0.15:#最新改成0.15(放宽值),较合适值0.18左右
+        return ''
+    tags = ['tagcombine','tagdate', 'tagnumber']
+    title = replace_TAGs(predict_title_seg, dicts,tags)
+    title = get_summary(title, tags)
+    return title
+
+if __name__=='__main__':
+    text='# 一 路 平 安 # tagdate 国 庆 中 秋 大 假 结 束 了 ， 昆 明 交 警 出 动 警 力 tagnumber 人 次 ， 保 “ 双 节 ” 道 路 交 通 安 全 ！ @ 公 安 部 交 通 安 全 微 发 布 @ 云 南 警 方 @ 昆 明 警 方'
+    tags = ['tagcombine', 'tagdate', 'tagnumber']
+    dicts=[{}, {0: [u'2017\u5e74', [u'#', u'\u5b89', u'\u56fd', u'\u5e86']]}, {0: [u'13212', [u'\u529b', u'\u8b66', u'\u4eba', u'\u6b21']]}]
+    title_seg='交 警 出 动 警 力 tagnumber 人 次'
+    title=wb_post_deal(title_seg,text,dicts)
+    if not title:
+        print 'hhhh'
+    print title
+
