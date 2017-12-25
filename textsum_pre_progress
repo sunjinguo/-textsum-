@@ -1,0 +1,292 @@
+#基于字预处理
+#coding=utf-8
+import re
+from langconv import *
+import jieba
+from collections import defaultdict
+
+re_CN = re.compile(ur'[\u4E00-\u9FA5'
+                   ur'\u9FA6-\u9FCB'
+                   ur'\u3400-\u4DB5'
+                   ur'\u2F00-\u2FD5'
+                   ur'\u2E80-\u2EF3'
+                   ur'\uF900-\uFAD9'
+                   ur'\uE815-\uE86F'
+                   ur'\uE400-\uE5E8'
+                   ur'\uE600-\uE6CF'
+                   ur'\u31C0-\u31E3'
+                   ur'\u2FF0-\u2FFB'
+                   ur'\u3105-\u3120'
+                   ur'\u31A0-\u31BA'
+                   ur'\u3007]')
+try:
+    # Wide UCS-4 build
+    re_spe = re.compile(u'['
+                        u'\U0001F300-\U0001F64F'
+                        u'\U0001F680-\U0001F6FF'
+                        u'\u2600-\u2B55]+',
+                        re.UNICODE)
+except re.error:
+    # Narrow UCS-2 build
+    re_spe = re.compile(u'('
+                        u'\ud83c[\udf00-\udfff]|'
+                        u'\ud83d[\udc00-\ude4f\ude80-\udeff]|'
+                        u'[\u2600-\u2B55])+',
+                        re.UNICODE)
+#re_EMOJI = re.compile(ur'\[\w+\]|\「\s\S+\」', re.UNICODE)
+re_EMOJI = re.compile(r'\[[^\[\]]{3,18}\]')
+re_URL1 = re.compile(ur'http://t.cn/[\W\w]{7,8}')
+re_URL=re.compile(ur'[,:：， （(]*http[\w:： /％%-－.,，)）]+/[\.\w)）]+')
+re_AD = re.compile(u'.*[售价｜券后｜券元￥].*')
+re_title = re.compile(u'【([^【】]{5,})】')
+re_DATE = re.compile(ur'[\d]{2,4}年[\d]{1,2}月[\d]{1,2}日|[\d]{2,4}年[\d]{1,2}月|[\d]{1,2}月[\d]{1,2}日[\d{1,2}:\d{1,2}|\d{1,2}点\d{,2}分]*|[\d]{1,2}日[\d{1,2}:\d{1,2}|\d{1,2}点\d{,2}分]*|[\d]{2,4}年|[\d]{1,2}月|[\d]{1,2}点[\d]{,2}分')
+#re_DATE = re.compile(ur'[[\d]{2,4}年[\d]{1,2}月[\d]{1,2}日|[\d]{2,4}年[\d]{1,2}月|[\d]{1,2}月[\d]{1,2}日|[\d]{1,2}日|[\d]{2,4}年|[\d]{1,2}月][[\d]{1,2}:[\d]{1,2}|[\d]{1,2}[点时]+[\d]{0,2}分{0,1}]*')
+re_NUM = re.compile(ur'([-]?[\d]+[\d\%.,]*[ ]?[百千万亿]{,3})')
+re_COMBINE = re.compile(ur'(?![0-9]+[^0-9A-Za-z\-]+)(?![a-zA-Z]+[^0-9A-Za-z\-]+)[0-9A-Za-z\-]{2,}')
+non_chinese = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890')
+
+
+def strQ2B(ustring):
+    """全角转半角"""
+    rstring = ""
+    for uchar in ustring:
+        inside_code=ord(uchar)
+        if inside_code == 12288:                              #全角空格直接转换
+            inside_code = 32
+        elif ((inside_code >= 65296 and inside_code <=65305)or (inside_code>=65313 and inside_code<=65338)or (inside_code>=65345 and inside_code<=65370) or inside_code==65294): #全角字符（除空格）根据关系转化\uFF10-\uFF19(65296-65305)- 65281-65374(0xFF01 ~ 0xFF5E)
+            inside_code -= 65248
+        rstring += unichr(inside_code)
+    return rstring
+
+def CN_Count(text):
+    '''设定汉字占比'''
+    CN_list = re_CN.findall(text)
+    if (len(CN_list)*3 < 0.8*len(text.encode('utf-8'))):
+        text=''
+    return text
+
+def wb_pre_deal(msg):
+    '''数据前期处理'''
+    msg=msg.replace("\xe2\x80\x8b", '').decode('utf-8')
+    msg = re.sub(r'[\n\r\t]', '', msg)
+    text = re_EMOJI.sub('', msg.encode('utf-8'))
+    text = re_spe.sub('',text)
+    text = strQ2B(text)
+    text = re_URL1.sub('', text)
+    text = re_URL.sub('', text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text=Traditional2Simplified(text)
+    text = CN_Count(text)
+    AD_list = re_AD.findall(text)
+    if AD_list:
+        return ''
+    return text
+
+def Traditional2Simplified(text):
+    """繁体转简体"""
+    text = Converter('zh-hans').convert(text)
+    return text
+def seg_by_char(content):
+	if isinstance(content, str):
+		content = content.decode('utf-8')
+	elif isinstance(content, unicode):
+		content = content
+	else:
+		raise Exception('can not process type of %s' % (type(content)))
+	seg_result = []
+	tmp_str = ''
+	for char in content:
+		if char in non_chinese:
+			tmp_str += char
+		elif char == ' ':
+			seg_result.append(tmp_str)
+			tmp_str = ''
+		else:
+			if tmp_str:
+				seg_result.append(tmp_str)
+				tmp_str = ''
+			seg_result.append(char)
+	if tmp_str:
+		seg_result.append(tmp_str)
+	return ' '.join(seg_result)
+
+def offline_pre_deal(msg):
+    title=''
+    msg=msg.replace('\\n','')
+    content=wb_pre_deal(msg)
+    if len(content)<60:
+        return ''
+    for match in re_title.finditer(content):
+        title = match.group(1)
+        span = match.span()
+        title = CN_Count(title)
+        if (len(title.encode('utf-8')) >= 15 and (len(title.encode('utf-8')) < 130) and span[0] < 0.2 * len(
+                content.strip())):
+            '''content内容去掉标题数据集'''
+            temp = u'【' + title + u'】'
+            content = content.replace(temp, '')
+            break
+        else:
+            title = ''
+            continue
+    if not title:
+        return ''
+    return title, content
+
+def tags_replace_deal(content):
+    content_new=content
+    #未分词content匹配对应类别tag并替换为标签,date替换必须放在number前
+    content_new = re_COMBINE.sub(' tagcombine ', content_new)
+    content_new = re_DATE.sub(' tagdate ', content_new)
+    content_new = re_NUM.sub(' tagnumber ', content_new)
+    return content_new.lower()
+
+
+def wb_post_deal(text):
+    text=tags_replace_deal(text)
+    text_seg = seg_by_char(text)
+    text_seg = re.sub(r"\s{2,}", " ", text_seg).strip()
+    return text_seg
+
+def create_dict(content):
+    dicts=[]
+    list_COMBINE = re_COMBINE.findall(content)
+    content_new = re_COMBINE.sub('tagcombine', content)
+    list_DATE = re_DATE.findall(content_new)
+    content_new = re_DATE.sub('tagdate', content_new)
+    list_NUM = re_NUM.findall(content_new)
+    #content_new = re_NUM.sub('tagnumber', content_new)
+    #print content_new
+    dicts.append(dict([(i, [combine, []]) for i, combine in enumerate(list_COMBINE)]))
+    dicts.append(dict([(i, [date, []]) for i, date in enumerate(list_DATE)]))
+    dicts.append(dict([(i, [num, []]) for i, num in enumerate(list_NUM)]))
+    return dicts
+
+#根据分词content及对应类型dict构建上下文
+def context_TAG(seg_content,dict,tag_type):
+    count_tag = 0
+    seg_content=seg_content.split()
+    for i, word in enumerate(seg_content):
+        if word!=tag_type:
+            continue
+        try:
+            if (i == 0):
+                '''tag在第一位取后４个字为上下文'''
+                dict[count_tag][1].append(seg_content[i + 1])
+                dict[count_tag][1].append(seg_content[i + 2])
+                dict[count_tag][1].append(seg_content[i + 3])
+                dict[count_tag][1].append(seg_content[i + 4])
+                count_tag += 1
+            elif (i == 1):
+                '''tag在第二位取前１个后３个字为上下文'''
+                dict[count_tag][1].append(seg_content[i - 1])
+                dict[count_tag][1].append(seg_content[i + 1])
+                dict[count_tag][1].append(seg_content[i + 2])
+                dict[count_tag][1].append(seg_content[i + 3])
+                count_tag += 1
+            elif (i == len(seg_content) - 2):
+                dict[count_tag][1].append(seg_content[i - 1])
+                dict[count_tag][1].append(seg_content[i - 2])
+                dict[count_tag][1].append(seg_content[i - 3])
+                dict[count_tag][1].append(seg_content[i + 1])
+                count_tag += 1
+            elif (i == len(seg_content) - 1):
+                dict[count_tag][1].append(seg_content[i - 1])
+                dict[count_tag][1].append(seg_content[i - 2])
+                dict[count_tag][1].append(seg_content[i - 3])
+                dict[count_tag][1].append(seg_content[i - 4])
+                count_tag += 1
+            else:
+                dict[count_tag][1].append(seg_content[i - 1])
+                dict[count_tag][1].append(seg_content[i - 2])
+                dict[count_tag][1].append(seg_content[i + 1])
+                dict[count_tag][1].append(seg_content[i + 2])
+                count_tag += 1
+        except:
+            print "FAIL TO CREAT DICT", seg_content,dict,tag_type
+            return None
+    return dict
+
+def dict_context(content_seg,dicts,tags):
+    '''取得content所有tag类型上下文字典'''
+    for i,dict in enumerate(dicts):
+        if dict:
+            dicts[i]=context_TAG(content_seg,dict,tags[i])
+        else:
+            continue
+    #print dicts
+    return dicts
+
+def get_context_dicts(content,content_seg,tags):
+    dicts=create_dict(content)
+    dicts=dict_context(content_seg,dicts,tags)
+    return dicts
+
+
+def wb_online_deal(msg):
+    tags = ['tagcombine', 'tagdate', 'tagnumber']
+    content=wb_pre_deal(msg)
+    if len(content.encode('utf-8'))//3 < 50:
+        return ('','')
+    content = content[:500] if len(content) > 500 else content
+    content_seg=wb_post_deal(content)
+    dicts=get_context_dicts(content, content_seg,tags)
+    content_seg=content_seg.encode('utf-8')
+    #print type(content_seg),type(dicts)
+    return content_seg,dicts
+
+
+def wb_offline_deal():
+    f1 = open('/home/jinguo/code/10w.txt', 'r')
+    f2 = open('/home/jinguo/code/10w_title_seg', 'w')
+    f3 = open('/home/jinguo/code/10w_content_seg', 'w')
+    f4 = open('/home/jinguo/code/10w_title', 'w')
+    f5 = open('/home/jinguo/code/10w_content', 'w')
+    mids = set()
+    titles = set()
+    for line in f1:
+        msg=line.rstrip('\n').split('\t')
+        mid = msg[0]
+        content = msg[1]
+        if (mid in mids):
+            continue
+        mids.add(mid)
+        text = offline_pre_deal(content)
+        if (not text):
+            continue
+        title, content_pre = text
+        if title in titles:
+            continue
+        titles.add(title)
+        title_seg = wb_post_deal(title)
+        content_seg = wb_post_deal(content_pre)
+        f2.write(title_seg.encode('utf-8')+'\n')
+        f3.write(content_seg.encode('utf-8')+'\n')
+        f4.write(title.encode('utf-8') + '\n')
+        f5.write(content_pre.encode('utf-8') + '\n')
+
+    f1.close()
+    f2.close()
+    f3.close()
+    f4.close()
+    f5.close()
+
+def wb_data_deal(msg='',online_predict=True):
+    #print type(msg)
+    if  online_predict:
+        content_msg=wb_online_deal(msg)
+        return content_msg
+    wb_offline_deal()
+    return ''
+
+if __name__=="__main__":
+    msg='#看看2017年蒲江县检察院都干了啥#该院制发了《蒲江县人民检察院入额院领导直接办理案件规定（试行）》，明确了检察长办理公诉部门检察官人均办案量5%案件，其他入额院领导办理公诉部门检察官人均办案量5%案件和分管部门检察官平均办案量30%案件。截至目前，入额院领导已直接办理案件71件，出庭支持公诉23人次，并呈稳步上升势头。'
+   
+    content_msg=wb_data_deal(msg)
+    #print type(content_msg)
+    content_seg,dicts=content_msg
+    print content_seg
+    print dicts
+    if not content_seg:
+        print 'hhh'
+    #wb_data_deal(online_predict=False)
